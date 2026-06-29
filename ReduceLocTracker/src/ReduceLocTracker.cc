@@ -1,6 +1,7 @@
 #include "cctk.h"
 #include "cctk_Arguments.h"
 #include "cctk_Parameters.h"
+#include "cctk_Parameter.h"
 
 #include <algorithm>
 #include <cmath>
@@ -91,9 +92,38 @@ bool better(CCTK_REAL value, CCTK_REAL current, Operation operation) {
   return is_maximum(operation) ? value > current : value < current;
 }
 
-bool should_run(int cctk_iteration, int compute_every) {
-  return compute_every > 0 && cctk_iteration % compute_every == 0 &&
-         !targets.empty();
+int parameter_int(const char *name, const char *thorn, int fallback) {
+  int type = -1;
+  const void *value = CCTK_ParameterGet(name, thorn, &type);
+  if (value == nullptr || type != PARAMETER_INT) {
+    return fallback;
+  }
+  return static_cast<int>(*static_cast<const CCTK_INT *>(value));
+}
+
+int effective_compute_every(int requested_compute_every) {
+  if (requested_compute_every != -2) {
+    return requested_compute_every;
+  }
+
+  const char *scalar_io_thorns[] = {"CarpetIOScalar", "IOBasic", "IOScalar"};
+  for (const char *thorn : scalar_io_thorns) {
+    const int scalar_every = parameter_int("outScalar_every", thorn, -2);
+    if (scalar_every != -2) {
+      return scalar_every;
+    }
+  }
+
+  const int io_every = parameter_int("out_every", "IOUtil", -1);
+  if (io_every != -1) {
+    return io_every;
+  }
+  return parameter_int("out_every", "IO", -1);
+}
+
+bool should_run(int cctk_iteration, int requested_compute_every) {
+  const int every = effective_compute_every(requested_compute_every);
+  return every > 0 && cctk_iteration % every == 0 && !targets.empty();
 }
 
 bool has_finite_target(const Target &target) {

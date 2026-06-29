@@ -15,7 +15,6 @@ ReduceLocTracker::tracked_var[0] = "HydroBase::rho"
 ReduceLocTracker::tracked_var[1] = "GRHayLHD::rho_star"
 ReduceLocTracker::reduction[0] = "maximum"
 ReduceLocTracker::reduction[1] = "maximum_abs"
-ReduceLocTracker::compute_every = 16
 ReduceLocTracker::use_carpet_reduce_weight = "yes"
 
 IOScalar::outScalar_vars = "ReduceLocTracker::reduce_loc_value ReduceLocTracker::reduce_loc_x ReduceLocTracker::reduce_loc_y ReduceLocTracker::reduce_loc_z ReduceLocTracker::reduce_loc_radius ReduceLocTracker::reduce_loc_count ReduceLocTracker::reduce_loc_valid"
@@ -28,6 +27,11 @@ selection.  These are different for absolute-value reductions.  If more than
 one point has the selected extremum, the reported location and value are the
 average over tied points and `reduce_loc_count` records the number of ties.
 `reduce_loc_radius` is the coordinate radius of the reported location.
+
+By default, `compute_every = -2` updates on the scalar-output cadence:
+`IOScalar::outScalar_every` when available, otherwise `IO::out_every`.  Set a
+positive `compute_every` explicitly if the tracker should update more often
+than scalar output, for example for Trigger logic.
 
 For moving multi-peak data, such as two neutron-star density maxima, each slot
 can restrict its search region:

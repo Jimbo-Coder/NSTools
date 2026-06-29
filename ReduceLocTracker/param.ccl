@@ -47,10 +47,12 @@ CCTK_REAL target_radius[16] "Coordinate search radius for near_point and follow_
   0:* :: "non-negative"
 } 0.0
 
-CCTK_INT compute_every "How often to update the tracked extrema; zero disables the thorn"
+CCTK_INT compute_every "How often to update the tracked extrema"
 {
-  0:1000000000 :: "zero or positive"
-} 1
+   1:* :: "update every so many iterations"
+  -1:0 :: "disable updates"
+  -2   :: "default to IOScalar::outScalar_every, then IO::out_every"
+} -2
 
 BOOLEAN exclude_ghosts "Exclude ghost zones from the search"
 {
