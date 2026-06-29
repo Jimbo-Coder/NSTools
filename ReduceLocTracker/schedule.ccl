@@ -1,0 +1,57 @@
+# Schedule definitions for thorn ReduceLocTracker
+
+if (num_tracked_vars > 0)
+{
+  STORAGE: reduce_loc_value
+  STORAGE: reduce_loc_comparison_value
+  STORAGE: reduce_loc_x
+  STORAGE: reduce_loc_y
+  STORAGE: reduce_loc_z
+  STORAGE: reduce_loc_radius
+  STORAGE: reduce_loc_count
+  STORAGE: reduce_loc_valid
+}
+
+schedule ReduceLocTracker_Init at CCTK_INITIAL
+{
+  LANG: C
+  OPTIONS: global
+  WRITES: ReduceLocTracker::reduce_loc_value
+  WRITES: ReduceLocTracker::reduce_loc_comparison_value
+  WRITES: ReduceLocTracker::reduce_loc_x
+  WRITES: ReduceLocTracker::reduce_loc_y
+  WRITES: ReduceLocTracker::reduce_loc_z
+  WRITES: ReduceLocTracker::reduce_loc_radius
+  WRITES: ReduceLocTracker::reduce_loc_count
+  WRITES: ReduceLocTracker::reduce_loc_valid
+} "Validate ReduceLocTracker targets and initialise output scalars"
+
+schedule group ReduceLocTracker_Group at CCTK_ANALYSIS
+{
+} "Track selected grid-function extrema"
+
+schedule ReduceLocTracker_Begin in ReduceLocTracker_Group
+{
+  LANG: C
+  OPTIONS: global
+} "Initialise local extrema for this iteration"
+
+schedule ReduceLocTracker_Search in ReduceLocTracker_Group after ReduceLocTracker_Begin
+{
+  LANG: C
+  OPTIONS: global, loop-local
+} "Find local extrema of selected grid functions"
+
+schedule ReduceLocTracker_Reduce in ReduceLocTracker_Group after ReduceLocTracker_Search
+{
+  LANG: C
+  OPTIONS: global
+  WRITES: ReduceLocTracker::reduce_loc_value
+  WRITES: ReduceLocTracker::reduce_loc_comparison_value
+  WRITES: ReduceLocTracker::reduce_loc_x
+  WRITES: ReduceLocTracker::reduce_loc_y
+  WRITES: ReduceLocTracker::reduce_loc_z
+  WRITES: ReduceLocTracker::reduce_loc_radius
+  WRITES: ReduceLocTracker::reduce_loc_count
+  WRITES: ReduceLocTracker::reduce_loc_valid
+} "Reduce local extrema and publish tracked locations"

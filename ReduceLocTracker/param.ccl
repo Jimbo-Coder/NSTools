@@ -1,0 +1,77 @@
+# Parameter definitions for thorn ReduceLocTracker
+
+private:
+
+CCTK_INT num_tracked_vars "Number of variables to track"
+{
+  0:16 :: "non-negative"
+} 0
+
+CCTK_STRING tracked_var[16] "Cactus grid-function variable name to track"
+{
+  ".*" :: "empty string disables this slot"
+} ""
+
+KEYWORD reduction[16] "Extremum operation for each tracked variable"
+{
+  "maximum"     :: "track the maximum value"
+  "minimum"     :: "track the minimum value"
+  "maximum_abs" :: "track the maximum absolute value"
+  "minimum_abs" :: "track the minimum absolute value"
+} "maximum"
+
+KEYWORD selection_region[16] "Search region for each tracked variable"
+{
+  "global"          :: "search all eligible grid points"
+  "near_point"      :: "search inside target_radius of target_x0,target_y0,target_z0"
+  "follow_previous" :: "search near the previous valid location, seeded by target_x0,target_y0,target_z0"
+} "global"
+
+CCTK_REAL target_x0[16] "Initial x-coordinate for near_point and follow_previous searches"
+{
+  *:* :: "unrestricted"
+} 0.0
+
+CCTK_REAL target_y0[16] "Initial y-coordinate for near_point and follow_previous searches"
+{
+  *:* :: "unrestricted"
+} 0.0
+
+CCTK_REAL target_z0[16] "Initial z-coordinate for near_point and follow_previous searches"
+{
+  *:* :: "unrestricted"
+} 0.0
+
+CCTK_REAL target_radius[16] "Coordinate search radius for near_point and follow_previous searches"
+{
+  0:* :: "non-negative"
+} 0.0
+
+CCTK_INT compute_every "How often to update the tracked extrema; zero disables the thorn"
+{
+  0:1000000000 :: "zero or positive"
+} 1
+
+BOOLEAN exclude_ghosts "Exclude ghost zones from the search"
+{
+} "yes"
+
+BOOLEAN use_carpet_reduce_weight "When available, ignore points with CarpetReduce::weight <= 0"
+{
+} "yes"
+
+BOOLEAN require_finite "Ignore NaN and infinite grid-function values"
+{
+} "yes"
+
+BOOLEAN only_positive_x[16] "Restrict each search to points with non-negative x"
+{
+} "no"
+
+BOOLEAN only_negative_x[16] "Restrict each search to points with non-positive x"
+{
+} "no"
+
+BOOLEAN verbose "Print a short line when a tracked variable is updated"
+{
+} "no"
