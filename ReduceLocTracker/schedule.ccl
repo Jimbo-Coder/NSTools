@@ -2,28 +2,16 @@
 
 if (num_tracked_vars > 0)
 {
-  STORAGE: reduce_loc_value
-  STORAGE: reduce_loc_comparison_value
-  STORAGE: reduce_loc_x
-  STORAGE: reduce_loc_y
-  STORAGE: reduce_loc_z
-  STORAGE: reduce_loc_radius
-  STORAGE: reduce_loc_count
-  STORAGE: reduce_loc_valid
+  STORAGE: reduce_loc_reals
+  STORAGE: reduce_loc_flags
 }
 
 schedule ReduceLocTracker_Init at CCTK_INITIAL
 {
   LANG: C
   OPTIONS: global
-  WRITES: ReduceLocTracker::reduce_loc_value
-  WRITES: ReduceLocTracker::reduce_loc_comparison_value
-  WRITES: ReduceLocTracker::reduce_loc_x
-  WRITES: ReduceLocTracker::reduce_loc_y
-  WRITES: ReduceLocTracker::reduce_loc_z
-  WRITES: ReduceLocTracker::reduce_loc_radius
-  WRITES: ReduceLocTracker::reduce_loc_count
-  WRITES: ReduceLocTracker::reduce_loc_valid
+  WRITES: ReduceLocTracker::reduce_loc_reals
+  WRITES: ReduceLocTracker::reduce_loc_flags
 } "Validate ReduceLocTracker targets and initialise output scalars"
 
 schedule group ReduceLocTracker_Group at CCTK_ANALYSIS
@@ -46,12 +34,6 @@ schedule ReduceLocTracker_Reduce in ReduceLocTracker_Group after ReduceLocTracke
 {
   LANG: C
   OPTIONS: global
-  WRITES: ReduceLocTracker::reduce_loc_value
-  WRITES: ReduceLocTracker::reduce_loc_comparison_value
-  WRITES: ReduceLocTracker::reduce_loc_x
-  WRITES: ReduceLocTracker::reduce_loc_y
-  WRITES: ReduceLocTracker::reduce_loc_z
-  WRITES: ReduceLocTracker::reduce_loc_radius
-  WRITES: ReduceLocTracker::reduce_loc_count
-  WRITES: ReduceLocTracker::reduce_loc_valid
+  WRITES: ReduceLocTracker::reduce_loc_reals
+  WRITES: ReduceLocTracker::reduce_loc_flags
 } "Reduce local extrema and publish tracked locations"

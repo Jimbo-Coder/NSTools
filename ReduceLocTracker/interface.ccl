@@ -5,18 +5,18 @@ inherits: Grid
 
 public:
 
-CCTK_REAL reduce_loc_value[16] TYPE=SCALAR tags='checkpoint="no"' "Raw grid-function value at the selected extremum"
+CCTK_REAL reduce_loc_reals[16] TYPE=SCALAR tags='checkpoint="no"'
+{
+  reduce_loc_value
+  reduce_loc_comparison_value
+  reduce_loc_x
+  reduce_loc_y
+  reduce_loc_z
+  reduce_loc_radius
+  reduce_loc_count
+} "Real-valued extrema, coordinates, radii, and tie counts"
 
-CCTK_REAL reduce_loc_comparison_value[16] TYPE=SCALAR tags='checkpoint="no"' "Value used to select the extremum"
-
-CCTK_REAL reduce_loc_x[16] TYPE=SCALAR tags='checkpoint="no"' "x-coordinate of the selected extremum"
-
-CCTK_REAL reduce_loc_y[16] TYPE=SCALAR tags='checkpoint="no"' "y-coordinate of the selected extremum"
-
-CCTK_REAL reduce_loc_z[16] TYPE=SCALAR tags='checkpoint="no"' "z-coordinate of the selected extremum"
-
-CCTK_REAL reduce_loc_radius[16] TYPE=SCALAR tags='checkpoint="no"' "Coordinate radius of the selected extremum"
-
-CCTK_REAL reduce_loc_count[16] TYPE=SCALAR tags='checkpoint="no"' "Number of tied grid points contributing to the selected location"
-
-CCTK_INT reduce_loc_valid[16] TYPE=SCALAR tags='checkpoint="no"' "Whether a valid finite extremum was found"
+CCTK_INT reduce_loc_flags[16] TYPE=SCALAR tags='checkpoint="no"'
+{
+  reduce_loc_valid
+} "Integer validity flags for tracked extrema"
