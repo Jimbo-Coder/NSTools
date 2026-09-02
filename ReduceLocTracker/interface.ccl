@@ -5,7 +5,7 @@ inherits: Grid
 
 public:
 
-CCTK_REAL reduce_loc_reals[16] TYPE=SCALAR tags='checkpoint="no"'
+CCTK_REAL reduce_loc_reals[16] TYPE=SCALAR tags='checkpoint="yes"'
 {
   reduce_loc_value
   reduce_loc_comparison_value
@@ -14,9 +14,4 @@ CCTK_REAL reduce_loc_reals[16] TYPE=SCALAR tags='checkpoint="no"'
   reduce_loc_z
   reduce_loc_radius
   reduce_loc_count
-} "Real-valued extrema, coordinates, radii, and tie counts"
-
-CCTK_INT reduce_loc_flags[16] TYPE=SCALAR tags='checkpoint="no"'
-{
-  reduce_loc_valid
-} "Integer validity flags for tracked extrema"
+} "Last valid extrema, coordinates, and radii, with latest search tie counts"

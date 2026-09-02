@@ -25,10 +25,6 @@ struct Target {
   CCTK_REAL target_y0;
   CCTK_REAL target_z0;
   CCTK_REAL target_radius2;
-  bool have_follow_location;
-  CCTK_REAL follow_x;
-  CCTK_REAL follow_y;
-  CCTK_REAL follow_z;
 };
 
 std::vector<Target> targets;
@@ -131,34 +127,11 @@ bool has_finite_target(const Target &target) {
          std::isfinite(target.target_z0);
 }
 
-void search_center(const Target &target, CCTK_REAL &center_x,
-                   CCTK_REAL &center_y, CCTK_REAL &center_z) {
-  if (target.selection_region == SelectionRegion::FollowPrevious &&
-      target.have_follow_location) {
-    center_x = target.follow_x;
-    center_y = target.follow_y;
-    center_z = target.follow_z;
-  } else {
-    center_x = target.target_x0;
-    center_y = target.target_y0;
-    center_z = target.target_z0;
-  }
-}
-
-bool inside_selection_region(const Target &target, CCTK_REAL xx, CCTK_REAL yy,
-                             CCTK_REAL zz) {
+bool inside_selection_region(const Target &target, CCTK_REAL dx, CCTK_REAL dy,
+                             CCTK_REAL dz) {
   if (target.selection_region == SelectionRegion::Global) {
     return true;
   }
-
-  CCTK_REAL center_x;
-  CCTK_REAL center_y;
-  CCTK_REAL center_z;
-  search_center(target, center_x, center_y, center_z);
-
-  const CCTK_REAL dx = xx - center_x;
-  const CCTK_REAL dy = yy - center_y;
-  const CCTK_REAL dz = zz - center_z;
   return dx * dx + dy * dy + dz * dz <= target.target_radius2;
 }
 
@@ -194,25 +167,6 @@ void reset_local() {
     local_y_sum[n] = 0.0;
     local_z_sum[n] = 0.0;
     local_count[n] = 0.0;
-  }
-}
-
-void initialise_outputs(int nslots, CCTK_REAL *reduce_loc_value,
-                        CCTK_REAL *reduce_loc_comparison_value,
-                        CCTK_REAL *reduce_loc_x, CCTK_REAL *reduce_loc_y,
-                        CCTK_REAL *reduce_loc_z,
-                        CCTK_REAL *reduce_loc_radius,
-                        CCTK_REAL *reduce_loc_count,
-                        CCTK_INT *reduce_loc_valid) {
-  for (int n = 0; n < nslots; ++n) {
-    reduce_loc_value[n] = 0.0;
-    reduce_loc_comparison_value[n] = 0.0;
-    reduce_loc_x[n] = 0.0;
-    reduce_loc_y[n] = 0.0;
-    reduce_loc_z[n] = 0.0;
-    reduce_loc_radius[n] = 0.0;
-    reduce_loc_count[n] = 0.0;
-    reduce_loc_valid[n] = 0;
   }
 }
 
@@ -273,10 +227,6 @@ void validate_targets() {
     target.target_y0 = target_y0[n];
     target.target_z0 = target_z0[n];
     target.target_radius2 = target_radius[n] * target_radius[n];
-    target.have_follow_location = false;
-    target.follow_x = target.target_x0;
-    target.follow_y = target.target_y0;
-    target.follow_z = target.target_z0;
     if (target.selection_region != SelectionRegion::Global) {
       if (target_radius[n] <= 0.0) {
         CCTK_VERROR("tracked_var[%d] uses selection_region=\"%s\" but "
@@ -317,10 +267,21 @@ extern "C" void ReduceLocTracker_Init(CCTK_ARGUMENTS) {
   DECLARE_CCTK_PARAMETERS;
 
   validate_targets();
-  initialise_outputs(max_tracked_slots, reduce_loc_value,
-                     reduce_loc_comparison_value, reduce_loc_x, reduce_loc_y,
-                     reduce_loc_z, reduce_loc_radius, reduce_loc_count,
-                     reduce_loc_valid);
+  if (num_tracked_vars == 0) {
+    return;
+  }
+  for (int n = 0; n < max_tracked_slots; ++n) {
+    reduce_loc_value[n] = 0.0;
+    reduce_loc_comparison_value[n] = 0.0;
+    reduce_loc_x[n] = target_x0[n];
+    reduce_loc_y[n] = target_y0[n];
+    reduce_loc_z[n] = target_z0[n];
+    reduce_loc_radius[n] =
+        std::sqrt(reduce_loc_x[n] * reduce_loc_x[n] +
+                  reduce_loc_y[n] * reduce_loc_y[n] +
+                  reduce_loc_z[n] * reduce_loc_z[n]);
+    reduce_loc_count[n] = 0.0;
+  }
 }
 
 extern "C" void ReduceLocTracker_Begin(CCTK_ARGUMENTS) {
@@ -361,6 +322,11 @@ extern "C" void ReduceLocTracker_Search(CCTK_ARGUMENTS) {
     if (gf == nullptr) {
       continue;
     }
+    const bool follow =
+        targets[n].selection_region == SelectionRegion::FollowPrevious;
+    const CCTK_REAL center_x = follow ? reduce_loc_x[n] : targets[n].target_x0;
+    const CCTK_REAL center_y = follow ? reduce_loc_y[n] : targets[n].target_y0;
+    const CCTK_REAL center_z = follow ? reduce_loc_z[n] : targets[n].target_z0;
 
     for (int k = kmin; k < kmax; ++k) {
       for (int j = jmin; j < jmax; ++j) {
@@ -378,7 +344,8 @@ extern "C" void ReduceLocTracker_Search(CCTK_ARGUMENTS) {
               (only_negative_x[n] && xx > 0.0)) {
             continue;
           }
-          if (!inside_selection_region(targets[n], xx, yy, zz)) {
+          if (!inside_selection_region(targets[n], xx - center_x, yy - center_y,
+                                       zz - center_z)) {
             continue;
           }
 
@@ -490,15 +457,12 @@ extern "C" void ReduceLocTracker_Reduce(CCTK_ARGUMENTS) {
     CCTK_WARN(0, "Failed to reduce extrema coordinate sums.");
   }
 
-  initialise_outputs(max_tracked_slots, reduce_loc_value,
-                     reduce_loc_comparison_value, reduce_loc_x, reduce_loc_y,
-                     reduce_loc_z, reduce_loc_radius, reduce_loc_count,
-                     reduce_loc_valid);
-
   for (int n = 0; n < ntracked; ++n) {
     const CCTK_REAL count = global_sum[5 * ntracked + n];
+    const bool valid = count > 0.0;
+    // An empty search invalidates this sample but retains the last result.
     reduce_loc_count[n] = count;
-    if (count > 0.0) {
+    if (valid) {
       reduce_loc_value[n] = global_sum[0 * ntracked + n] / count;
       reduce_loc_comparison_value[n] = global_sum[1 * ntracked + n] / count;
       reduce_loc_x[n] = global_sum[2 * ntracked + n] / count;
@@ -508,14 +472,6 @@ extern "C" void ReduceLocTracker_Reduce(CCTK_ARGUMENTS) {
           std::sqrt(reduce_loc_x[n] * reduce_loc_x[n] +
                     reduce_loc_y[n] * reduce_loc_y[n] +
                     reduce_loc_z[n] * reduce_loc_z[n]);
-      reduce_loc_valid[n] = 1;
-      if (targets[n].selection_region == SelectionRegion::FollowPrevious) {
-        targets[n].follow_x = reduce_loc_x[n];
-        targets[n].follow_y = reduce_loc_y[n];
-        targets[n].follow_z = reduce_loc_z[n];
-        targets[n].have_follow_location = true;
-      }
-
       if (verbose) {
         CCTK_VInfo(CCTK_THORNSTRING,
                    "[%d] %s %s value=%+.16e compare=%+.16e "

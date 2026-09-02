@@ -17,7 +17,7 @@ ReduceLocTracker::reduction[0] = "maximum"
 ReduceLocTracker::reduction[1] = "maximum_abs"
 ReduceLocTracker::use_carpet_reduce_weight = "yes"
 
-IOScalar::outScalar_vars = "ReduceLocTracker::reduce_loc_reals ReduceLocTracker::reduce_loc_flags"
+IOScalar::outScalar_vars = "ReduceLocTracker::reduce_loc_reals"
 ```
 
 The thorn outputs scalar arrays indexed in the same order as
@@ -26,11 +26,14 @@ selected location, while `reduce_loc_comparison_value` is the value used for the
 selection.  These are different for absolute-value reductions.  If more than
 one point has the selected extremum, the reported location and value are the
 average over tied points and `reduce_loc_count` records the number of ties.
+`reduce_loc_count > 0` indicates a valid result for the latest search.  If no
+eligible points are found, the count is zero and the previous result is retained.
 `reduce_loc_radius` is the coordinate radius of the reported location.
 The array index is the tracked slot, not a raw grid `i,j,k` index; AMR-safe
 location diagnostics are reported through coordinates and radius.
-`reduce_loc_reals` and `reduce_loc_flags` are output groups containing these
-scalar arrays, so they can be requested without listing every component.
+`reduce_loc_reals` contains these scalar arrays, so they can be requested without
+listing every component.  The group is checkpointed and its coordinates are
+reused by follow-previous searches after recovery.
 
 By default, `compute_every = -2` updates on the scalar-output cadence:
 `IOScalar::outScalar_every` when available, otherwise `IO::out_every`.  Set a

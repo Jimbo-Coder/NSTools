@@ -3,7 +3,6 @@
 if (num_tracked_vars > 0)
 {
   STORAGE: reduce_loc_reals
-  STORAGE: reduce_loc_flags
 }
 
 schedule ReduceLocTracker_Init at CCTK_INITIAL
@@ -11,7 +10,6 @@ schedule ReduceLocTracker_Init at CCTK_INITIAL
   LANG: C
   OPTIONS: global
   WRITES: ReduceLocTracker::reduce_loc_reals
-  WRITES: ReduceLocTracker::reduce_loc_flags
 } "Validate ReduceLocTracker targets and initialise output scalars"
 
 schedule group ReduceLocTracker_Group at CCTK_ANALYSIS
@@ -28,12 +26,13 @@ schedule ReduceLocTracker_Search in ReduceLocTracker_Group after ReduceLocTracke
 {
   LANG: C
   OPTIONS: global, loop-local
+  READS: ReduceLocTracker::reduce_loc_reals
 } "Find local extrema of selected grid functions"
 
 schedule ReduceLocTracker_Reduce in ReduceLocTracker_Group after ReduceLocTracker_Search
 {
   LANG: C
   OPTIONS: global
+  READS: ReduceLocTracker::reduce_loc_reals
   WRITES: ReduceLocTracker::reduce_loc_reals
-  WRITES: ReduceLocTracker::reduce_loc_flags
 } "Reduce local extrema and publish tracked locations"
