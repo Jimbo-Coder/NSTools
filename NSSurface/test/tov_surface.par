@@ -1,0 +1,88 @@
+!DESC "Find a TOV density contour on an octant grid and import it into QLM"
+ActiveThorns = "
+  Boundary CartGrid3D CoordBase IOUtil InitBase SymBase Time LocalReduce Vectors
+  Boost HDF5 MPI zlib Fortran LAPACK TGRtensor
+  Carpet CarpetLib CarpetReduce CarpetIOASCII CarpetIOScalar CarpetIOHDF5
+  CarpetSlab CarpetInterp Timers AEILocalInterp
+  ADMBase HydroBase TmunuBase StaticConformal Constants SpaceMask SphericalSurface QuasiLocalMeasures
+  NSSurface TOVSolver ReflectionSymmetry
+"
+
+Cactus::cctk_itlast = 0
+Cactus::terminate = "iteration"
+InitBase::initial_data_setup_method = "init_all_levels"
+Time::dtfac = 0.25
+
+CartGrid3D::type = "coordbase"
+CartGrid3D::domain = "full"
+CartGrid3D::avoid_origin = no
+CoordBase::xmin = 0
+CoordBase::xmax = 12
+CoordBase::ymin = 0
+CoordBase::ymax = 12
+CoordBase::zmin = 0
+CoordBase::zmax = 12
+CoordBase::dx = 0.5
+CoordBase::dy = 0.5
+CoordBase::dz = 0.5
+CoordBase::boundary_size_x_lower = 3
+CoordBase::boundary_size_x_upper = 3
+CoordBase::boundary_size_y_lower = 3
+CoordBase::boundary_size_y_upper = 3
+CoordBase::boundary_size_z_lower = 3
+CoordBase::boundary_size_z_upper = 3
+Driver::ghost_size = 3
+Carpet::domain_from_coordbase = yes
+Carpet::max_refinement_levels = 1
+Carpet::prolongation_order_space = 3
+Carpet::prolongation_order_time = 0
+Carpet::poison_new_timelevels = yes
+Carpet::check_for_poison = no
+CarpetLib::poison_new_memory = yes
+
+ADMBase::initial_data = "tov"
+ADMBase::initial_lapse = "tov"
+ADMBase::initial_shift = "zero"
+HydroBase::timelevels = 3
+HydroBase::initial_hydro = "tov"
+
+SphericalSurface::nsurfaces = 1
+SphericalSurface::maxntheta = 19
+SphericalSurface::maxnphi = 36
+SphericalSurface::ntheta[0] = 19
+SphericalSurface::nphi[0] = 36
+SphericalSurface::name[0] = "sphere"
+SphericalSurface::origin_x[0] = 0
+
+NSSurface::find_surface[0] = yes
+NSSurface::rho_surface[0] = 1e-5
+NSSurface::max_radius[0] = 10
+NSSurface::compute_every = 2
+
+QuasiLocalMeasures::num_surfaces = 1
+QuasiLocalMeasures::surface_index[0] = 0
+QuasiLocalMeasures::spatial_order = 4
+QuasiLocalMeasures::interpolator_options = "order=4"
+QuasiLocalMeasures::killing_vector_method = "axial"
+
+IO::out_dir = $parfile
+IO::out_every = 2
+IO::parfile_write = "no"
+IOASCII::out0D_every = 2
+IOASCII::out0D_vars = "SphericalSurface::sf_valid SphericalSurface::sf_info NSSurface::info_valid QuasiLocalMeasures::qlm_have_valid_data[0] QuasiLocalMeasures::qlm_radius[0]"
+IOHDF5::out_every = -1
+IOHDF5::out_vars = ""
+
+IO::out_fileinfo = "none"
+IOASCII::out2D_every = 1
+IOASCII::out2D_vars = "SphericalSurface::sf_radius"
+
+CoordBase::boundary_shiftout_x_lower = 1
+CoordBase::boundary_shiftout_y_lower = 1
+CoordBase::boundary_shiftout_z_lower = 1
+ReflectionSymmetry::reflection_x = yes
+ReflectionSymmetry::reflection_y = yes
+ReflectionSymmetry::reflection_z = yes
+ReflectionSymmetry::avoid_origin_x = no
+ReflectionSymmetry::avoid_origin_y = no
+ReflectionSymmetry::avoid_origin_z = no

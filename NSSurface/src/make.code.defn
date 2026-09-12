@@ -1,0 +1,2 @@
+SRCS = NSSurface.cc SurfaceInfo.cc
+SUBDIRS =

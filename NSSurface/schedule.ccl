@@ -1,0 +1,40 @@
+STORAGE: info_valid
+
+schedule NSSurface_Init at CCTK_INITIAL
+{
+  LANG: C
+  OPTIONS: global
+  READS: SphericalSurface::sf_shape_descriptors
+  WRITES: SphericalSurface::sf_active
+  WRITES: SphericalSurface::sf_valid
+  WRITES: SphericalSurface::sf_origin
+  WRITES: SphericalSurface::sf_radius
+  WRITES: NSSurface::info_valid
+} "Initialize owned surfaces and their configured origins"
+
+schedule NSSurface_Find at CCTK_ANALYSIS after VI_GRMHD_VolumeIntegralGroup before qlm_calculate
+{
+  LANG: C
+  OPTIONS: global
+  READS: HydroBase::rho(everywhere)
+  READS: SphericalSurface::sf_origin
+  READS: SphericalSurface::sf_shape_descriptors
+  READS: SphericalSurface::sf_coordinate_descriptors
+  WRITES: SphericalSurface::sf_active
+  WRITES: SphericalSurface::sf_valid
+  WRITES: SphericalSurface::sf_radius
+} "Find stellar density contours after centre updates and before QLM"
+
+schedule NSSurface_UpdateInfo at CCTK_ANALYSIS after NSSurface_Find before qlm_calculate
+{
+  LANG: C
+  OPTIONS: global
+  READS: ADMBase::metric(everywhere)
+  READS: SphericalSurface::sf_valid
+  READS: SphericalSurface::sf_radius
+  READS: SphericalSurface::sf_origin
+  READS: SphericalSurface::sf_shape_descriptors
+  READS: SphericalSurface::sf_coordinate_descriptors
+  WRITES: SphericalSurface::sf_info
+  WRITES: NSSurface::info_valid
+} "Calculate area, coordinate moments and bounds of found surfaces"

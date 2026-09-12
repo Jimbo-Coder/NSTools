@@ -1,0 +1,40 @@
+BOOLEAN find_surface[42] "Find a density contour in this SphericalSurface slot"
+{
+} no
+
+REAL rho_surface[42] "Rest-mass density of the contour; choose above the atmosphere"
+{
+  (0:* :: "Positive density"
+} 1e-8
+
+REAL max_radius[42] "Maximum search radius about the supplied surface origin"
+{
+  (0:* :: "Positive coordinate radius"
+} 20.0
+
+INT compute_every "Find surfaces every this many iterations, including iteration zero"
+{
+  1:* :: "Use a synchronized diagnostic cadence"
+} 128
+
+INT radial_samples "Number of radial intervals used to bracket the first outward crossing"
+{
+  2:* :: "At least two intervals"
+} 64
+
+REAL radial_tolerance "Maximum coordinate width of the final root bracket"
+{
+  (0:* :: "Positive coordinate distance"
+} 1e-4
+
+SHARES: SphericalSurface
+USES INT nsurfaces
+USES INT maxntheta
+USES INT maxnphi
+USES BOOLEAN auto_res
+USES BOOLEAN symmetric_x
+USES BOOLEAN symmetric_y
+USES BOOLEAN symmetric_z
+
+SHARES: ADMBase
+USES KEYWORD metric_type

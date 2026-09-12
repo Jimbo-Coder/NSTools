@@ -1,0 +1,10 @@
+implements: NSSurface
+inherits: ADMBase HydroBase SphericalSurface
+
+CCTK_POINTER_TO_CONST FUNCTION GetMPICommWorld (CCTK_POINTER_TO_CONST IN cctkGH)
+USES FUNCTION GetMPICommWorld
+
+PUBLIC:
+
+CCTK_INT info_valid[SphericalSurface::nsurfaces] TYPE=scalar
+  "Auxiliary information: 1 valid, 0 skipped or unused, -1 unavailable"
