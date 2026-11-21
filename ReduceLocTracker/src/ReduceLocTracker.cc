@@ -1,7 +1,9 @@
 #include "cctk.h"
 #include "cctk_Arguments.h"
-#include "cctk_Parameters.h"
 #include "cctk_Parameter.h"
+#include "cctk_Parameters.h"
+
+#include "NSTools.hxx"
 
 #include <algorithm>
 #include <cmath>
@@ -11,43 +13,70 @@
 #include <vector>
 
 namespace {
+using namespace NSTools;
 
 enum class Operation { Maximum, Minimum, MaximumAbs, MinimumAbs };
 
-enum class SelectionRegion { Global, NearPoint, FollowPrevious };
+constexpr int max_tracked_slots = 16;
 
 struct Target {
+  int slot;
   std::string name;
   Operation operation;
-  SelectionRegion selection_region;
   int varindex;
-  CCTK_REAL target_x0;
-  CCTK_REAL target_y0;
-  CCTK_REAL target_z0;
-  CCTK_REAL target_radius2;
+  Point seed;
+  CCTK_REAL target_radius2; // infinite: no limit
+  // Seed at the origin: placed by the tracker on a local extremum, and placed
+  // again after it is lost.
+  bool placed;
+};
+
+// Slots tracking one variable with one reduction share the grid.
+struct Family {
+  int varindex;
+  Operation operation;
+  std::vector<int> members; // indices into targets, in slot order
+};
+
+// Ties at the best value are averaged.
+struct Accumulator {
+  CCTK_REAL best;
+  CCTK_REAL value_sum;
+  CCTK_REAL compare_sum;
+  CCTK_REAL x_sum;
+  CCTK_REAL y_sum;
+  CCTK_REAL z_sum;
+  CCTK_REAL count;
 };
 
 std::vector<Target> targets;
-std::vector<CCTK_REAL> local_compare;
-std::vector<CCTK_REAL> local_value_sum;
-std::vector<CCTK_REAL> local_compare_sum;
-std::vector<CCTK_REAL> local_x_sum;
-std::vector<CCTK_REAL> local_y_sum;
-std::vector<CCTK_REAL> local_z_sum;
-std::vector<CCTK_REAL> local_count;
+std::vector<Family> families;
+std::vector<Accumulator> local_acc;          // per target
+std::vector<Extrema> local_extrema; // per family
 
 bool initialised = false;
-int carpet_reduce_weight_varindex = -2;
-bool warned_missing_carpet_reduce_weight = false;
-bool warned_null_carpet_reduce_weight = false;
-constexpr int max_tracked_slots = 16;
+bool warned_segment = false;
 
-bool is_maximum(Operation operation) {
-  return operation == Operation::Maximum || operation == Operation::MaximumAbs;
+// The value each operation maximises.
+CCTK_REAL tracked(Operation operation, CCTK_REAL value) {
+  switch (operation) {
+  case Operation::Maximum:
+    return value;
+  case Operation::Minimum:
+    return -value;
+  case Operation::MaximumAbs:
+    return std::fabs(value);
+  case Operation::MinimumAbs:
+    return -std::fabs(value);
+  }
+  return value;
 }
 
-bool uses_absolute(Operation operation) {
-  return operation == Operation::MaximumAbs || operation == Operation::MinimumAbs;
+// The value reported as reduce_loc_comparison_value.
+CCTK_REAL comparison(Operation operation, CCTK_REAL value) {
+  return operation == Operation::MaximumAbs || operation == Operation::MinimumAbs
+             ? std::fabs(value)
+             : value;
 }
 
 Operation parse_operation(const char *name) {
@@ -66,190 +95,92 @@ Operation parse_operation(const char *name) {
   CCTK_VERROR("Unknown ReduceLocTracker reduction \"%s\".", name);
 }
 
-SelectionRegion parse_selection_region(const char *name) {
-  if (std::strcmp(name, "global") == 0) {
-    return SelectionRegion::Global;
-  }
-  if (std::strcmp(name, "near_point") == 0) {
-    return SelectionRegion::NearPoint;
-  }
-  if (std::strcmp(name, "follow_previous") == 0) {
-    return SelectionRegion::FollowPrevious;
-  }
-  CCTK_VERROR("Unknown ReduceLocTracker selection_region \"%s\".", name);
-}
-
-CCTK_REAL sentinel(Operation operation) {
-  const CCTK_REAL large = std::numeric_limits<CCTK_REAL>::max();
-  return is_maximum(operation) ? -large : large;
-}
-
-bool better(CCTK_REAL value, CCTK_REAL current, Operation operation) {
-  return is_maximum(operation) ? value > current : value < current;
-}
-
-int parameter_int(const char *name, const char *thorn, int fallback) {
-  int type = -1;
-  const void *value = CCTK_ParameterGet(name, thorn, &type);
-  if (value == nullptr || type != PARAMETER_INT) {
-    return fallback;
-  }
-  return static_cast<int>(*static_cast<const CCTK_INT *>(value));
-}
-
-int effective_compute_every(int requested_compute_every) {
-  if (requested_compute_every != -2) {
-    return requested_compute_every;
-  }
-
-  const char *scalar_io_thorns[] = {"CarpetIOScalar", "IOBasic", "IOScalar"};
-  for (const char *thorn : scalar_io_thorns) {
-    const int scalar_every = parameter_int("outScalar_every", thorn, -2);
-    if (scalar_every != -2) {
-      return scalar_every;
-    }
-  }
-
-  const int io_every = parameter_int("out_every", "IOUtil", -1);
-  if (io_every != -1) {
-    return io_every;
-  }
-  return parameter_int("out_every", "IO", -1);
-}
-
 bool should_run(int cctk_iteration, int requested_compute_every) {
-  const int every = effective_compute_every(requested_compute_every);
+  const int every = output_cadence(requested_compute_every);
   return every > 0 && cctk_iteration % every == 0 && !targets.empty();
 }
 
-bool has_finite_target(const Target &target) {
-  return std::isfinite(target.target_x0) && std::isfinite(target.target_y0) &&
-         std::isfinite(target.target_z0);
-}
-
-bool inside_selection_region(const Target &target, CCTK_REAL dx, CCTK_REAL dy,
-                             CCTK_REAL dz) {
-  if (target.selection_region == SelectionRegion::Global) {
-    return true;
-  }
-  return dx * dx + dy * dy + dz * dz <= target.target_radius2;
-}
-
-const CCTK_REAL *get_carpet_reduce_weight(const cGH *cctkGH) {
-  if (carpet_reduce_weight_varindex == -2) {
-    carpet_reduce_weight_varindex = CCTK_VarIndex("CarpetReduce::weight");
-  }
-  if (carpet_reduce_weight_varindex < 0) {
-    if (!warned_missing_carpet_reduce_weight) {
-      CCTK_WARN(2, "CarpetReduce::weight is unavailable; ReduceLocTracker is "
-                   "continuing without reduction weights.");
-      warned_missing_carpet_reduce_weight = true;
-    }
-    return nullptr;
-  }
-
-  const CCTK_REAL *weight = static_cast<const CCTK_REAL *>(
-      CCTK_VarDataPtrI(cctkGH, 0, carpet_reduce_weight_varindex));
-  if (weight == nullptr && !warned_null_carpet_reduce_weight) {
-    CCTK_WARN(2, "CarpetReduce::weight has no data pointer; ReduceLocTracker is "
-                 "continuing without reduction weights.");
-    warned_null_carpet_reduce_weight = true;
-  }
-  return weight;
-}
-
 void reset_local() {
-  for (std::size_t n = 0; n < targets.size(); ++n) {
-    local_compare[n] = sentinel(targets[n].operation);
-    local_value_sum[n] = 0.0;
-    local_compare_sum[n] = 0.0;
-    local_x_sum[n] = 0.0;
-    local_y_sum[n] = 0.0;
-    local_z_sum[n] = 0.0;
-    local_count[n] = 0.0;
+  const CCTK_REAL none = -std::numeric_limits<CCTK_REAL>::max();
+  for (auto &acc : local_acc) {
+    acc = {none, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   }
+  for (auto &extrema : local_extrema) {
+    extrema.clear();
+  }
+}
+
+void update_accumulator(Accumulator &acc, CCTK_REAL value, CCTK_REAL compare,
+                        CCTK_REAL best, const Point &p) {
+  if (acc.count == 0.0 || best > acc.best) {
+    acc = {best, value, compare, p[0], p[1], p[2], 1.0};
+  } else if (best == acc.best) {
+    acc.value_sum += value;
+    acc.compare_sum += compare;
+    acc.x_sum += p[0];
+    acc.y_sum += p[1];
+    acc.z_sum += p[2];
+    acc.count += 1.0;
+  }
+}
+
+void add_target(int slot, const char *name, Operation operation, const Point &seed,
+                CCTK_REAL radius) {
+  const int varindex = CCTK_VarIndex(name);
+  if (varindex < 0) {
+    CCTK_VERROR("Could not find tracked_var[%d]=\"%s\".", slot, name);
+  }
+  const int group = CCTK_GroupIndexFromVarI(varindex);
+  if (group < 0 || CCTK_GroupTypeI(group) != CCTK_GF || CCTK_GroupDimI(group) != 3 ||
+      CCTK_VarTypeI(varindex) != CCTK_VARIABLE_REAL) {
+    CCTK_VERROR("tracked_var[%d]=\"%s\" is not a real 3D grid function.", slot, name);
+  }
+  if (!finite(seed)) {
+    CCTK_VERROR("tracked_var[%d] has non-finite target_x0/y0/z0.", slot);
+  }
+  Target target;
+  target.slot = slot;
+  target.name = name;
+  target.operation = operation;
+  target.varindex = varindex;
+  target.seed = seed;
+  target.target_radius2 =
+      radius > 0 ? radius * radius : std::numeric_limits<CCTK_REAL>::infinity();
+  target.placed = seed[0] == 0.0 && seed[1] == 0.0 && seed[2] == 0.0;
+  targets.push_back(target);
 }
 
 void validate_targets() {
   DECLARE_CCTK_PARAMETERS;
 
-  if (num_tracked_vars > max_tracked_slots) {
-    CCTK_VERROR("num_tracked_vars=%d exceeds the compiled ReduceLocTracker "
-                "slot count %d.",
-                static_cast<int>(num_tracked_vars), max_tracked_slots);
-  }
-
   targets.clear();
-  targets.reserve(num_tracked_vars);
-
-  for (int n = 0; n < num_tracked_vars; ++n) {
-    if (tracked_var[n] == nullptr || std::strlen(tracked_var[n]) == 0) {
-      CCTK_VERROR("tracked_var[%d] is empty but num_tracked_vars=%d.", n,
-                  static_cast<int>(num_tracked_vars));
+  for (int n = 0; n < max_tracked_slots; ++n) {
+    if (tracked_var[n] != nullptr && std::strlen(tracked_var[n]) > 0) {
+      add_target(n, tracked_var[n], parse_operation(reduction[n]),
+                 {target_x0[n], target_y0[n], target_z0[n]}, target_radius[n]);
     }
-    if (only_positive_x[n] && only_negative_x[n]) {
-      CCTK_VERROR("tracked_var[%d] sets both only_positive_x and "
-                  "only_negative_x.",
-                  n);
+  }
+  // Nothing configured: follow up to three density maxima (stars).
+  if (targets.empty() && CCTK_VarIndex("HydroBase::rho") >= 0) {
+    for (int n = 0; n < 3; ++n) {
+      add_target(n, "HydroBase::rho", Operation::Maximum, {0.0, 0.0, 0.0}, 0.0);
     }
-
-    const int varindex = CCTK_VarIndex(tracked_var[n]);
-    if (varindex < 0) {
-      CCTK_VERROR("Could not find tracked_var[%d]=\"%s\".", n,
-                  tracked_var[n]);
-    }
-
-    const int group = CCTK_GroupIndexFromVarI(varindex);
-    if (group < 0) {
-      CCTK_VERROR("Could not find group for tracked_var[%d]=\"%s\".", n,
-                  tracked_var[n]);
-    }
-
-    if (CCTK_GroupTypeI(group) != CCTK_GF) {
-      CCTK_VERROR("tracked_var[%d]=\"%s\" is not a grid function.", n,
-                  tracked_var[n]);
-    }
-    if (CCTK_GroupDimI(group) != 3) {
-      CCTK_VERROR("tracked_var[%d]=\"%s\" is not a 3D grid function.", n,
-                  tracked_var[n]);
-    }
-    if (CCTK_VarTypeI(varindex) != CCTK_VARIABLE_REAL) {
-      CCTK_VERROR("tracked_var[%d]=\"%s\" is not CCTK_REAL.", n,
-                  tracked_var[n]);
-    }
-
-    Target target;
-    target.name = tracked_var[n];
-    target.operation = parse_operation(reduction[n]);
-    target.selection_region = parse_selection_region(selection_region[n]);
-    target.varindex = varindex;
-    target.target_x0 = target_x0[n];
-    target.target_y0 = target_y0[n];
-    target.target_z0 = target_z0[n];
-    target.target_radius2 = target_radius[n] * target_radius[n];
-    if (target.selection_region != SelectionRegion::Global) {
-      if (target_radius[n] <= 0.0) {
-        CCTK_VERROR("tracked_var[%d] uses selection_region=\"%s\" but "
-                    "target_radius[%d]=%.17g is not positive.",
-                    n, selection_region[n], n,
-                    static_cast<double>(target_radius[n]));
-      }
-      if (!has_finite_target(target)) {
-        CCTK_VERROR("tracked_var[%d] uses selection_region=\"%s\" but "
-                    "target_x0/y0/z0 are not all finite.",
-                    n, selection_region[n]);
-      }
-    }
-    targets.push_back(target);
   }
 
-  local_compare.resize(targets.size());
-  local_value_sum.resize(targets.size());
-  local_compare_sum.resize(targets.size());
-  local_x_sum.resize(targets.size());
-  local_y_sum.resize(targets.size());
-  local_z_sum.resize(targets.size());
-  local_count.resize(targets.size());
+  families.clear();
+  for (int n = 0; n < static_cast<int>(targets.size()); ++n) {
+    auto family = std::find_if(families.begin(), families.end(), [&](const Family &f) {
+      return f.varindex == targets[n].varindex && f.operation == targets[n].operation;
+    });
+    if (family == families.end()) {
+      families.push_back({targets[n].varindex, targets[n].operation, {}});
+      family = families.end() - 1;
+    }
+    family->members.push_back(n);
+  }
+
+  local_acc.resize(targets.size());
+  local_extrema.resize(families.size());
   reset_local();
   initialised = true;
 }
@@ -260,6 +191,84 @@ void ensure_initialised() {
   }
 }
 
+// reduce_loc_count < 0: seeded, not searched yet; 0: lost, or waiting to be
+// placed; > 0: valid, with that many tied points.
+bool waiting(const Target &target, const CCTK_REAL *count) {
+  return target.placed && count[target.slot] == 0.0;
+}
+
+// Slots whose nearest points are their own: valid, or seeded and not yet
+// searched. A slot that lost its extremum claims none, so it cannot hide a
+// merged peak from the slot still following it.
+bool claims(const Target &target, const CCTK_REAL *count) {
+  return count[target.slot] != 0.0;
+}
+
+// Reduce the per-process best values and their tied points.
+void reduce_accumulators(const cGH *cctkGH, std::vector<Accumulator> &acc) {
+  const int m = static_cast<int>(acc.size());
+  if (m == 0) {
+    return;
+  }
+  std::vector<CCTK_REAL> best(m), sums(6 * m, 0.0);
+  for (int i = 0; i < m; ++i) {
+    best[i] = acc[i].best;
+  }
+  reduce(cctkGH, "maximum", m, best.data());
+  for (int i = 0; i < m; ++i) {
+    if (acc[i].count > 0.0 && acc[i].best == best[i]) {
+      const CCTK_REAL mine[6] = {acc[i].value_sum, acc[i].compare_sum, acc[i].x_sum,
+                                 acc[i].y_sum,     acc[i].z_sum,       acc[i].count};
+      for (int c = 0; c < 6; ++c) {
+        sums[c * m + i] = mine[c];
+      }
+    }
+  }
+  reduce(cctkGH, "sum", 6 * m, sums.data());
+  for (int i = 0; i < m; ++i) {
+    acc[i] = {best[i],          sums[0 * m + i], sums[1 * m + i], sums[2 * m + i],
+              sums[3 * m + i],  sums[4 * m + i], sums[5 * m + i]};
+  }
+}
+
+// Two extrema of one family are separate when its tracked value dips
+// between them, along the straight segment, by at least min_prominence times
+// the stronger one's magnitude. Collective.
+bool separate(const cGH *cctkGH, const Family &family, const Point &a,
+              CCTK_REAL value_a, const Point &b, CCTK_REAL value_b) {
+  DECLARE_CCTK_PARAMETERS;
+  CCTK_REAL lowest;
+  const Operation operation = family.operation;
+  if (!segment_minimum(cctkGH, family.varindex, a, b, segment_samples,
+                                [operation](CCTK_REAL v) { return tracked(operation, v); },
+                                lowest)) {
+    if (!warned_segment) {
+      CCTK_VWarn(1, __LINE__, __FILE__, CCTK_THORNSTRING,
+                 "Cannot interpolate %s between tracked extrema (needs CarpetInterp "
+                 "and AEILocalInterp); treating them as separate.",
+                 CCTK_FullVarName(family.varindex));
+      warned_segment = true;
+    }
+    return true;
+  }
+  const CCTK_REAL stronger = std::max(value_a, value_b);
+  const CCTK_REAL weaker = std::min(value_a, value_b);
+  return weaker - lowest >= min_prominence * std::fabs(stronger);
+}
+
+void publish(const Target &target, const Accumulator &acc, CCTK_REAL *value,
+             CCTK_REAL *compare, CCTK_REAL *x, CCTK_REAL *y, CCTK_REAL *z,
+             CCTK_REAL *radius, CCTK_REAL *count) {
+  const int slot = target.slot;
+  value[slot] = acc.value_sum / acc.count;
+  compare[slot] = acc.compare_sum / acc.count;
+  x[slot] = acc.x_sum / acc.count;
+  y[slot] = acc.y_sum / acc.count;
+  z[slot] = acc.z_sum / acc.count;
+  radius[slot] = std::sqrt(x[slot] * x[slot] + y[slot] * y[slot] + z[slot] * z[slot]);
+  count[slot] = acc.count;
+}
+
 } // namespace
 
 extern "C" void ReduceLocTracker_Init(CCTK_ARGUMENTS) {
@@ -267,20 +276,21 @@ extern "C" void ReduceLocTracker_Init(CCTK_ARGUMENTS) {
   DECLARE_CCTK_PARAMETERS;
 
   validate_targets();
-  if (num_tracked_vars == 0) {
-    return;
-  }
   for (int n = 0; n < max_tracked_slots; ++n) {
     reduce_loc_value[n] = 0.0;
     reduce_loc_comparison_value[n] = 0.0;
     reduce_loc_x[n] = target_x0[n];
     reduce_loc_y[n] = target_y0[n];
     reduce_loc_z[n] = target_z0[n];
-    reduce_loc_radius[n] =
-        std::sqrt(reduce_loc_x[n] * reduce_loc_x[n] +
-                  reduce_loc_y[n] * reduce_loc_y[n] +
-                  reduce_loc_z[n] * reduce_loc_z[n]);
+    reduce_loc_radius[n] = std::sqrt(reduce_loc_x[n] * reduce_loc_x[n] +
+                                     reduce_loc_y[n] * reduce_loc_y[n] +
+                                     reduce_loc_z[n] * reduce_loc_z[n]);
     reduce_loc_count[n] = 0.0;
+  }
+  for (const Target &t : targets) {
+    if (!t.placed) {
+      reduce_loc_count[t.slot] = -1.0; // seeded, not searched yet
+    }
   }
 }
 
@@ -295,6 +305,10 @@ extern "C" void ReduceLocTracker_Begin(CCTK_ARGUMENTS) {
   reset_local();
 }
 
+// One pass per family. Each point belongs to the nearest claiming slot
+// (within its radius); a slot that lost its extremum searches the points
+// nearer to it than to any claiming slot. While a member waits to be placed,
+// the family's local extrema are collected.
 extern "C" void ReduceLocTracker_Search(CCTK_ARGUMENTS) {
   DECLARE_CCTK_ARGUMENTS;
   DECLARE_CCTK_PARAMETERS;
@@ -304,80 +318,80 @@ extern "C" void ReduceLocTracker_Search(CCTK_ARGUMENTS) {
     return;
   }
 
-  const int imin = exclude_ghosts ? cctk_nghostzones[0] : 0;
-  const int jmin = exclude_ghosts ? cctk_nghostzones[1] : 0;
-  const int kmin = exclude_ghosts ? cctk_nghostzones[2] : 0;
-  const int imax = exclude_ghosts ? cctk_lsh[0] - cctk_nghostzones[0]
-                                  : cctk_lsh[0];
-  const int jmax = exclude_ghosts ? cctk_lsh[1] - cctk_nghostzones[1]
-                                  : cctk_lsh[1];
-  const int kmax = exclude_ghosts ? cctk_lsh[2] - cctk_nghostzones[2]
-                                  : cctk_lsh[2];
-  const CCTK_REAL *reduction_weight =
-      use_carpet_reduce_weight ? get_carpet_reduce_weight(cctkGH) : nullptr;
+  static const int weight_index = CCTK_VarIndex("CarpetReduce::weight");
+  const CCTK_REAL *weight =
+      weight_index >= 0
+          ? static_cast<const CCTK_REAL *>(CCTK_VarDataPtrI(cctkGH, 0, weight_index))
+          : nullptr;
+  const int dj = cctk_ash[0], dk = cctk_ash[0] * cctk_ash[1];
 
-  for (std::size_t n = 0; n < targets.size(); ++n) {
-    const CCTK_REAL *gf = static_cast<const CCTK_REAL *>(
-        CCTK_VarDataPtrI(cctkGH, 0, targets[n].varindex));
+  for (std::size_t f = 0; f < families.size(); ++f) {
+    const Family &family = families[f];
+    const CCTK_REAL *gf =
+        static_cast<const CCTK_REAL *>(CCTK_VarDataPtrI(cctkGH, 0, family.varindex));
     if (gf == nullptr) {
       continue;
     }
-    const bool follow =
-        targets[n].selection_region == SelectionRegion::FollowPrevious;
-    const CCTK_REAL center_x = follow ? reduce_loc_x[n] : targets[n].target_x0;
-    const CCTK_REAL center_y = follow ? reduce_loc_y[n] : targets[n].target_y0;
-    const CCTK_REAL center_z = follow ? reduce_loc_z[n] : targets[n].target_z0;
+    std::vector<int> claiming, lost;
+    bool collect = false;
+    for (const int n : family.members) {
+      const Target &t = targets[n];
+      if (waiting(t, reduce_loc_count)) {
+        collect = true;
+      } else if (claims(t, reduce_loc_count)) {
+        claiming.push_back(n);
+      } else {
+        lost.push_back(n);
+      }
+    }
+    auto location = [&](int n) {
+      const int slot = targets[n].slot;
+      return Point{reduce_loc_x[slot], reduce_loc_y[slot], reduce_loc_z[slot]};
+    };
+    std::vector<Point> claim_at, lost_at;
+    for (const int n : claiming) {
+      claim_at.push_back(location(n));
+    }
+    for (const int n : lost) {
+      lost_at.push_back(location(n));
+    }
+    auto value = [&](int q) { return tracked(family.operation, gf[q]); };
 
-    for (int k = kmin; k < kmax; ++k) {
-      for (int j = jmin; j < jmax; ++j) {
-        for (int i = imin; i < imax; ++i) {
-          const int index = CCTK_GFINDEX3D(cctkGH, i, j, k);
-          if (reduction_weight != nullptr && reduction_weight[index] <= 0.0) {
+    for (int k = cctk_nghostzones[2]; k < cctk_lsh[2] - cctk_nghostzones[2]; ++k) {
+      for (int j = cctk_nghostzones[1]; j < cctk_lsh[1] - cctk_nghostzones[1]; ++j) {
+        for (int i = cctk_nghostzones[0]; i < cctk_lsh[0] - cctk_nghostzones[0]; ++i) {
+          const int p = CCTK_GFINDEX3D(cctkGH, i, j, k);
+          if ((weight != nullptr && weight[p] <= 0.0) || !std::isfinite(gf[p])) {
             continue;
           }
+          const Point position{x[p], y[p], z[p]};
+          const CCTK_REAL v = value(p);
 
-          const CCTK_REAL xx = x[index];
-          const CCTK_REAL yy = y[index];
-          const CCTK_REAL zz = z[index];
-
-          if ((only_positive_x[n] && xx < 0.0) ||
-              (only_negative_x[n] && xx > 0.0)) {
-            continue;
-          }
-          if (!inside_selection_region(targets[n], xx - center_x, yy - center_y,
-                                       zz - center_z)) {
-            continue;
+          if (collect && i > 0 && j > 0 && k > 0 && i < cctk_lsh[0] - 1 &&
+              j < cctk_lsh[1] - 1 && k < cctk_lsh[2] - 1 &&
+              local_maximum(value, p, dj, dk)) {
+            local_extrema[f].add({v, gf[p], position});
           }
 
-          const CCTK_REAL raw_value = gf[index];
-          if (require_finite && !std::isfinite(raw_value)) {
-            continue;
+          CCTK_REAL nearest = std::numeric_limits<CCTK_REAL>::infinity();
+          int owner = -1;
+          for (std::size_t c = 0; c < claiming.size(); ++c) {
+            const CCTK_REAL d2 = distance2(position, claim_at[c]);
+            if (d2 < nearest) {
+              nearest = d2;
+              owner = claiming[c];
+            }
           }
-
-          const CCTK_REAL comparison_value =
-              uses_absolute(targets[n].operation) ? std::fabs(raw_value)
-                                                  : raw_value;
-          if (require_finite && !std::isfinite(comparison_value)) {
-            continue;
+          if (owner >= 0 && nearest <= targets[owner].target_radius2) {
+            update_accumulator(local_acc[owner], gf[p], comparison(family.operation, gf[p]),
+                               v, position);
           }
-
-          if (local_count[n] == 0.0 ||
-              better(comparison_value, local_compare[n],
-                     targets[n].operation)) {
-            local_compare[n] = comparison_value;
-            local_value_sum[n] = raw_value;
-            local_compare_sum[n] = comparison_value;
-            local_x_sum[n] = xx;
-            local_y_sum[n] = yy;
-            local_z_sum[n] = zz;
-            local_count[n] = 1.0;
-          } else if (comparison_value == local_compare[n]) {
-            local_value_sum[n] += raw_value;
-            local_compare_sum[n] += comparison_value;
-            local_x_sum[n] += xx;
-            local_y_sum[n] += yy;
-            local_z_sum[n] += zz;
-            local_count[n] += 1.0;
+          for (std::size_t l = 0; l < lost.size(); ++l) {
+            const CCTK_REAL d2 = distance2(position, lost_at[l]);
+            if (d2 <= nearest && d2 <= targets[lost[l]].target_radius2) {
+              update_accumulator(local_acc[lost[l]], gf[p],
+                                 comparison(family.operation, gf[p]), v, position);
+            }
           }
         }
       }
@@ -394,92 +408,66 @@ extern "C" void ReduceLocTracker_Reduce(CCTK_ARGUMENTS) {
     return;
   }
 
-  const int ntracked = static_cast<int>(targets.size());
-  if (ntracked == 0) {
-    return;
-  }
+  std::vector<Accumulator> acc = local_acc;
+  reduce_accumulators(cctkGH, acc);
 
-  std::vector<CCTK_REAL> global_compare(ntracked);
-  std::vector<CCTK_REAL> send_sum(6 * ntracked, 0.0);
-  std::vector<CCTK_REAL> global_sum(6 * ntracked, 0.0);
-
-  const int max_handle = CCTK_ReductionArrayHandle("maximum");
-  const int min_handle = CCTK_ReductionArrayHandle("minimum");
-  const int sum_handle = CCTK_ReductionArrayHandle("sum");
-  if (max_handle < 0 || min_handle < 0 || sum_handle < 0) {
-    CCTK_WARN(0, "Could not obtain required reduction handles.");
-  }
-
-  std::vector<CCTK_REAL> max_input(ntracked, 0.0);
-  std::vector<CCTK_REAL> max_output(ntracked, 0.0);
-  std::vector<CCTK_REAL> min_input(ntracked, 0.0);
-  std::vector<CCTK_REAL> min_output(ntracked, 0.0);
-  std::vector<CCTK_INT> is_max_op(ntracked, 0);
-  std::vector<CCTK_INT> is_min_op(ntracked, 0);
-
-  for (int n = 0; n < ntracked; ++n) {
-    if (is_maximum(targets[n].operation)) {
-      max_input[n] = local_compare[n];
-      min_input[n] = std::numeric_limits<CCTK_REAL>::max();
-      is_max_op[n] = 1;
-    } else {
-      max_input[n] = -std::numeric_limits<CCTK_REAL>::max();
-      min_input[n] = local_compare[n];
-      is_min_op[n] = 1;
+  for (std::size_t f = 0; f < families.size(); ++f) {
+    const Family &family = families[f];
+    // Searching slots first, in slot order: one whose extremum is not
+    // separate from one found earlier this step has lost it (the extrema
+    // merged) and keeps its last location with count 0. Then waiting slots
+    // are placed on the strongest separate local extrema.
+    std::vector<int> searched, placing;
+    for (const int n : family.members) {
+      (waiting(targets[n], reduce_loc_count) ? placing : searched).push_back(n);
     }
-  }
+    std::vector<std::pair<Point, CCTK_REAL>> found;
+    auto separate_from_found = [&](const Point &p, CCTK_REAL v) {
+      for (const auto &other : found) {
+        if (!separate(cctkGH, family, p, v, other.first, other.second)) {
+          return false;
+        }
+      }
+      return true;
+    };
 
-  if (CCTK_ReduceLocArrayToArray1D(cctkGH, -1, max_handle, max_input.data(),
-                                   max_output.data(), ntracked,
-                                   CCTK_VARIABLE_REAL) ||
-      CCTK_ReduceLocArrayToArray1D(cctkGH, -1, min_handle, min_input.data(),
-                                   min_output.data(), ntracked,
-                                   CCTK_VARIABLE_REAL)) {
-    CCTK_WARN(0, "Failed to reduce local comparison extrema.");
-  }
-
-  for (int n = 0; n < ntracked; ++n) {
-    global_compare[n] = is_max_op[n] ? max_output[n] : min_output[n];
-
-    if (local_count[n] > 0.0 && local_compare[n] == global_compare[n]) {
-      send_sum[0 * ntracked + n] = local_value_sum[n];
-      send_sum[1 * ntracked + n] = local_compare_sum[n];
-      send_sum[2 * ntracked + n] = local_x_sum[n];
-      send_sum[3 * ntracked + n] = local_y_sum[n];
-      send_sum[4 * ntracked + n] = local_z_sum[n];
-      send_sum[5 * ntracked + n] = local_count[n];
+    for (const int n : searched) {
+      const Target &t = targets[n];
+      const Accumulator &a = acc[n];
+      if (a.count <= 0.0) {
+        reduce_loc_count[t.slot] = 0.0;
+        continue;
+      }
+      const Point p{a.x_sum / a.count, a.y_sum / a.count, a.z_sum / a.count};
+      if (!separate_from_found(p, a.best)) {
+        reduce_loc_count[t.slot] = 0.0;
+        continue;
+      }
+      publish(t, a, reduce_loc_value, reduce_loc_comparison_value, reduce_loc_x,
+              reduce_loc_y, reduce_loc_z, reduce_loc_radius, reduce_loc_count);
+      found.push_back({p, a.best});
     }
-  }
 
-  if (CCTK_ReduceLocArrayToArray1D(cctkGH, -1, sum_handle, send_sum.data(),
-                                   global_sum.data(), 6 * ntracked,
-                                   CCTK_VARIABLE_REAL)) {
-    CCTK_WARN(0, "Failed to reduce extrema coordinate sums.");
-  }
-
-  for (int n = 0; n < ntracked; ++n) {
-    const CCTK_REAL count = global_sum[5 * ntracked + n];
-    const bool valid = count > 0.0;
-    // An empty search invalidates this sample but retains the last result.
-    reduce_loc_count[n] = count;
-    if (valid) {
-      reduce_loc_value[n] = global_sum[0 * ntracked + n] / count;
-      reduce_loc_comparison_value[n] = global_sum[1 * ntracked + n] / count;
-      reduce_loc_x[n] = global_sum[2 * ntracked + n] / count;
-      reduce_loc_y[n] = global_sum[3 * ntracked + n] / count;
-      reduce_loc_z[n] = global_sum[4 * ntracked + n] / count;
-      reduce_loc_radius[n] =
-          std::sqrt(reduce_loc_x[n] * reduce_loc_x[n] +
-                    reduce_loc_y[n] * reduce_loc_y[n] +
-                    reduce_loc_z[n] * reduce_loc_z[n]);
-      if (verbose) {
-        CCTK_VInfo(CCTK_THORNSTRING,
-                   "[%d] %s %s value=%+.16e compare=%+.16e "
-                   "loc=(%+.16e,%+.16e,%+.16e) radius=%+.16e count=%.0f",
-                   n, targets[n].name.c_str(), reduction[n],
-                   reduce_loc_value[n], reduce_loc_comparison_value[n],
-                   reduce_loc_x[n], reduce_loc_y[n], reduce_loc_z[n],
-                   reduce_loc_radius[n], reduce_loc_count[n]);
+    if (placing.empty()) {
+      continue;
+    }
+    const std::vector<Extremum> candidates = local_extrema[f].gather(cctkGH);
+    std::size_t next = 0;
+    for (const int n : placing) {
+      const Target &t = targets[n];
+      for (; next < candidates.size(); ++next) {
+        const Extremum &c = candidates[next];
+        if (!separate_from_found(c.position, c.value)) {
+          continue;
+        }
+        const Accumulator a{c.value,       c.raw,         comparison(family.operation, c.raw),
+                            c.position[0], c.position[1], c.position[2],
+                            1.0};
+        publish(t, a, reduce_loc_value, reduce_loc_comparison_value, reduce_loc_x,
+                reduce_loc_y, reduce_loc_z, reduce_loc_radius, reduce_loc_count);
+        found.push_back({c.position, c.value});
+        ++next;
+        break;
       }
     }
   }

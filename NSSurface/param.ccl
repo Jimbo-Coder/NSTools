@@ -2,30 +2,45 @@ BOOLEAN find_surface[42] "Find a density contour in this SphericalSurface slot"
 {
 } no
 
-REAL rho_surface[42] "Rest-mass density of the contour; choose above the atmosphere"
+KEYWORD rho_surface_mode "How the contour density is chosen"
+{
+  "initial"  :: "rho_surface_fraction times the star's peak density at its first search"
+  "current"  :: "rho_surface_fraction times the star's peak density at each search"
+  "absolute" :: "rho_surface"
+} "initial"
+
+REAL rho_surface_fraction[42] "Contour density over the star's peak density (initial and current modes)"
+{
+  (0:1] :: "Fraction of the peak; choose above the atmosphere"
+} 1e-4
+
+REAL rho_surface[42] "Rest-mass density of the contour in absolute mode; choose above the atmosphere"
 {
   (0:* :: "Positive density"
 } 1e-8
 
-REAL max_radius[42] "Maximum search radius about the supplied surface origin"
+REAL max_radius[42] "Search limit about the surface origin (0: twice the star's largest radius at the previous search); rays also stop at the grid edge and at the plane halfway to another star"
 {
-  (0:* :: "Positive coordinate radius"
-} 20.0
+  0   :: "Automatic"
+  (0:* :: "Coordinate radius"
+} 0
+
+REAL placement_fraction "Slots left at (0,0,0) are placed only on local density maxima at least this fraction of the densest one"
+{
+  (0:1] :: "Fraction of the densest local maximum"
+} 0.01
+
+REAL max_clipped_fraction "Largest fraction of rays allowed to reach the search limit without a crossing; those rays are set to the limit"
+{
+  0:1 :: "0 requires a crossing on every ray"
+} 0.25
 
 INT compute_every "Find surfaces every this many iterations, including iteration zero"
 {
-  1:* :: "Use a synchronized diagnostic cadence"
-} 128
-
-INT radial_samples "Number of radial intervals used to bracket the first outward crossing"
-{
-  2:* :: "At least two intervals"
-} 64
-
-REAL radial_tolerance "Maximum coordinate width of the final root bracket"
-{
-  (0:* :: "Positive coordinate distance"
-} 1e-4
+   1:* :: "Use a synchronized diagnostic cadence"
+  -1:0 :: "Disable updates"
+  -2   :: "Default to out0D_every, outScalar_every, QLM::calculate_every, or IO::out_every"
+} -2
 
 SHARES: SphericalSurface
 USES INT nsurfaces

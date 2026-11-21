@@ -16,14 +16,6 @@ CCTK_REAL derivative(const CCTK_REAL *f, int stride, CCTK_REAL dx) {
   return (f[-2*stride] - 8*f[-stride] + 8*f[stride] - f[2*stride]) / (12*dx);
 }
 
-void reduce(const cGH *gh, const char *operation, int count, CCTK_REAL *values) {
-  std::vector<CCTK_REAL> result(count);
-  const int handle = CCTK_ReductionArrayHandle(operation);
-  if (handle < 0 || CCTK_ReduceLocArrayToArray1D(
-          gh, -1, handle, values, result.data(), count, CCTK_VARIABLE_REAL) < 0)
-    CCTK_ERROR("NSSurface: cannot reduce surface information");
-  std::copy(result.begin(), result.end(), values);
-}
 } // namespace
 
 extern "C" void NSSurface_UpdateInfo(CCTK_ARGUMENTS) {
@@ -39,7 +31,7 @@ extern "C" void NSSurface_UpdateInfo(CCTK_ARGUMENTS) {
 
   for (int s = 0; s < nsurfaces; ++s) {
     info_valid[s] = 0;
-    if (!find_surface[s]) continue;
+    if (!surface_owned(s)) continue;
     CCTK_REAL *const info[] = {
         sf_area, sf_mean_radius, sf_centroid_x, sf_centroid_y, sf_centroid_z,
         sf_quadrupole_xx, sf_quadrupole_xy, sf_quadrupole_xz,
@@ -87,19 +79,9 @@ extern "C" void NSSurface_UpdateInfo(CCTK_ARGUMENTS) {
     bool valid = interpolate(cctkGH, table, coordinates, 6, variables, metric);
     Util_TableDestroy(table);
 
-    // The full midpoint theta grid has 2*ni-1 points for a reflected hemisphere.
-    // Use QLM's sine-series quadrature; halve endpoints on symmetry planes.
-    const int full_nt = symmetric_z[s] ? 2*ni-1 : ni;
-    std::vector<CCTK_REAL> weights(ni);
-    for (int i = 0; i < ni; ++i) {
-      const CCTK_REAL theta = sf_origin_theta[s] + (i+gt)*dt;
-      CCTK_REAL sum = 0;
-      for (int l = 0; l <= (full_nt-1)/2; ++l)
-        sum += std::sin((2*l+1)*theta)/(2*l+1);
-      weights[i] = 4*dp*sum/full_nt;
-      for (const bool reflection : reflected) if (reflection) weights[i] *= 2;
-      if (symmetric_z[s] && i == ni-1) weights[i] /= 2;
-    }
+    const std::vector<CCTK_REAL> weights = theta_weights(
+        ni, gt, sf_origin_theta[s], dt, dp,
+        {bool(symmetric_x[s]), bool(symmetric_y[s]), bool(symmetric_z[s])});
 
     CCTK_REAL sums[11] = {}; // area, radius, x/y/z, xx/xy/xz/yy/yz/zz moments
     CCTK_REAL lower[] = {infinity, infinity, infinity, infinity}; // radius, x/y/z

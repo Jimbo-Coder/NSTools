@@ -3,6 +3,12 @@
 implements: ReduceLocTracker
 inherits: Grid
 
+CCTK_POINTER_TO_CONST FUNCTION GetMPICommWorld (CCTK_POINTER_TO_CONST IN cctkGH)
+USES FUNCTION GetMPICommWorld
+
+# Code shared with NSSurface.
+INCLUDES HEADER: NSTools.hxx in NSTools.hxx
+
 public:
 
 CCTK_REAL reduce_loc_reals[16] TYPE=SCALAR tags='checkpoint="yes"'

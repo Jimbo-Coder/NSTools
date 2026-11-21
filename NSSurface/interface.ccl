@@ -1,10 +1,29 @@
 implements: NSSurface
-inherits: ADMBase HydroBase SphericalSurface
+inherits: ADMBase HydroBase SphericalSurface grid
 
 CCTK_POINTER_TO_CONST FUNCTION GetMPICommWorld (CCTK_POINTER_TO_CONST IN cctkGH)
 USES FUNCTION GetMPICommWorld
+
+# Code shared with ReduceLocTracker, which must be in the ThornList but need
+# not be active.
+USES INCLUDE HEADER: NSTools.hxx
 
 PUBLIC:
 
 CCTK_INT info_valid[SphericalSurface::nsurfaces] TYPE=scalar
   "Auxiliary information: 1 valid, 0 skipped or unused, -1 unavailable"
+
+CCTK_REAL search_info[SphericalSurface::nsurfaces] TYPE=scalar
+{
+  rho_contour rho_peak search_radius clipped_fraction
+} "Last search: contour density, star's peak density, nearest search limit over the rays, fraction of rays clipped at their limit"
+
+PRIVATE:
+
+CCTK_INT slot_state[SphericalSurface::nsurfaces] TYPE=scalar
+  "0 waiting to be placed on a star, 1 following a star"
+
+CCTK_REAL surface_state[SphericalSurface::nsurfaces] TYPE=scalar
+{
+  rho_reference outer_radius radial_step last_origin_x last_origin_y last_origin_z
+} "Restart state: initial peak density, largest unclipped radius of the last surface, radial sampling step and the origin NSSurface last wrote"

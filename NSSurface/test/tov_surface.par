@@ -55,6 +55,7 @@ SphericalSurface::name[0] = "sphere"
 SphericalSurface::origin_x[0] = 0
 
 NSSurface::find_surface[0] = yes
+NSSurface::rho_surface_mode = "absolute"
 NSSurface::rho_surface[0] = 1e-5
 NSSurface::max_radius[0] = 10
 NSSurface::compute_every = 2
@@ -69,7 +70,7 @@ IO::out_dir = $parfile
 IO::out_every = 2
 IO::parfile_write = "no"
 IOASCII::out0D_every = 2
-IOASCII::out0D_vars = "SphericalSurface::sf_valid SphericalSurface::sf_info NSSurface::info_valid QuasiLocalMeasures::qlm_have_valid_data[0] QuasiLocalMeasures::qlm_radius[0]"
+IOASCII::out0D_vars = "SphericalSurface::sf_valid SphericalSurface::sf_info NSSurface::info_valid NSSurface::search_info QuasiLocalMeasures::qlm_have_valid_data[0] QuasiLocalMeasures::qlm_radius[0]"
 IOHDF5::out_every = -1
 IOHDF5::out_vars = ""
 

@@ -1,9 +1,6 @@
 # Schedule definitions for thorn ReduceLocTracker
 
-if (num_tracked_vars > 0)
-{
-  STORAGE: reduce_loc_reals
-}
+STORAGE: reduce_loc_reals
 
 schedule ReduceLocTracker_Init at CCTK_INITIAL
 {

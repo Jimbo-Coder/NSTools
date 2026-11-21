@@ -1,4 +1,4 @@
-STORAGE: info_valid
+STORAGE: info_valid search_info slot_state surface_state
 
 schedule NSSurface_Init at CCTK_INITIAL
 {
@@ -10,22 +10,64 @@ schedule NSSurface_Init at CCTK_INITIAL
   WRITES: SphericalSurface::sf_origin
   WRITES: SphericalSurface::sf_radius
   WRITES: NSSurface::info_valid
+  WRITES: NSSurface::search_info
+  WRITES: NSSurface::slot_state
+  WRITES: NSSurface::surface_state
 } "Initialize owned surfaces and their configured origins"
 
-schedule NSSurface_Find at CCTK_ANALYSIS after VI_GRMHD_VolumeIntegralGroup before qlm_calculate
+schedule NSSurface_Recover at CCTK_POST_RECOVER_VARIABLES
+{
+  LANG: C
+  OPTIONS: global
+  READS: SphericalSurface::sf_origin
+  READS: NSSurface::slot_state
+  READS: NSSurface::surface_state
+  WRITES: NSSurface::slot_state
+  WRITES: NSSurface::surface_state
+} "Repair surface state missing from older checkpoints"
+
+schedule group NSSurface_Group at CCTK_ANALYSIS after VI_GRMHD_VolumeIntegralGroup before qlm_calculate
+{
+} "Find stellar density contours and surface information"
+
+schedule NSSurface_BeginScan in NSSurface_Group
+{
+  LANG: C
+  OPTIONS: global
+} "Reset the per-step density scan"
+
+schedule NSSurface_ScanDensity in NSSurface_Group after NSSurface_BeginScan
+{
+  LANG: C
+  OPTIONS: global, loop-local
+  READS: Grid::coordinates(everywhere)
+  READS: HydroBase::rho(everywhere)
+  READS: SphericalSurface::sf_origin
+  READS: NSSurface::slot_state
+  READS: NSSurface::surface_state
+} "Find each star's peak density and candidate peaks for placing surfaces"
+
+schedule NSSurface_Find in NSSurface_Group after NSSurface_ScanDensity
 {
   LANG: C
   OPTIONS: global
   READS: HydroBase::rho(everywhere)
   READS: SphericalSurface::sf_origin
+  READS: SphericalSurface::sf_radius
   READS: SphericalSurface::sf_shape_descriptors
   READS: SphericalSurface::sf_coordinate_descriptors
+  READS: NSSurface::slot_state
+  READS: NSSurface::surface_state
+  WRITES: SphericalSurface::sf_origin
   WRITES: SphericalSurface::sf_active
   WRITES: SphericalSurface::sf_valid
   WRITES: SphericalSurface::sf_radius
+  WRITES: NSSurface::search_info
+  WRITES: NSSurface::slot_state
+  WRITES: NSSurface::surface_state
 } "Find stellar density contours after centre updates and before QLM"
 
-schedule NSSurface_UpdateInfo at CCTK_ANALYSIS after NSSurface_Find before qlm_calculate
+schedule NSSurface_UpdateInfo in NSSurface_Group after NSSurface_Find
 {
   LANG: C
   OPTIONS: global
