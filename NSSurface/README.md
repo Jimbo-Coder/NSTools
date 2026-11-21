@@ -47,7 +47,8 @@ IOASCII::out2D_vars = "SphericalSurface::sf_radius"   # the shapes, if wanted
 
 Nothing else needs choosing. The slots place themselves on the stars, the
 contour is 1e-4 of each star's initial peak density (a warning is printed
-if that is near the atmosphere), the search limit follows each star
+if that is within a factor 10 of the lowest density on the grid, the
+atmosphere), the search limit follows each star
 (`max_radius = 0`), the sampling step is the finest grid spacing, and the
 cadence is the 0D/scalar output cadence. SphericalSurface's default angular
 grid (`ntheta = 19`, `nphi = 38` including ghosts) is used unless

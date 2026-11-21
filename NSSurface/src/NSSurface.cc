@@ -25,9 +25,11 @@ enum SlotState { waiting = 0, following = 1 };
 using Candidate = NSTools::Extremum; // value: the local maximum's density
 
 // Per-step scratch filled by NSSurface_ScanDensity: each followed star's peak
-// and lowest density, the finest grid spacing, the grid's bounding box and,
-// while a slot waits to be placed, this rank's densest local density maxima.
-std::array<CCTK_REAL, max_slots> slot_peaks, slot_floors;
+// density, the lowest density on the grid (the atmosphere), the finest grid
+// spacing, the grid's bounding box and, while a slot waits to be placed, this
+// rank's densest local density maxima.
+std::array<CCTK_REAL, max_slots> slot_peaks;
+CCTK_REAL grid_floor;
 CCTK_REAL finest_spacing;
 Point grid_min, grid_max;
 NSTools::Extrema local_maxima;
@@ -394,7 +396,7 @@ extern "C" void NSSurface_BeginScan(CCTK_ARGUMENTS) {
   if (every <= 0 || cctk_iteration % every != 0)
     return;
   slot_peaks.fill(lowest);
-  slot_floors.fill(std::numeric_limits<CCTK_REAL>::max());
+  grid_floor = std::numeric_limits<CCTK_REAL>::max();
   finest_spacing = std::numeric_limits<CCTK_REAL>::max();
   local_maxima.clear();
   grid_min.fill(std::numeric_limits<CCTK_REAL>::max());
@@ -441,6 +443,7 @@ extern "C" void NSSurface_ScanDensity(CCTK_ARGUMENTS) {
         if ((weight != nullptr && weight[p] <= 0) || !std::isfinite(rho[p]))
           continue;
         const Point position{x[p], y[p], z[p]};
+        grid_floor = std::min(grid_floor, rho[p]);
         for (int a = 0; a < 3; ++a) {
           grid_min[a] = std::min(grid_min[a], position[a]);
           grid_max[a] = std::max(grid_max[a], position[a]);
@@ -457,7 +460,6 @@ extern "C" void NSSurface_ScanDensity(CCTK_ARGUMENTS) {
         }
         if (nearest >= 0 && nearest_distance <= radius_limit(nearest, outer_radius[nearest])) {
           slot_peaks[nearest] = std::max(slot_peaks[nearest], rho[p]);
-          slot_floors[nearest] = std::min(slot_floors[nearest], rho[p]);
         }
         if (any_waiting && rho[p] > 0 && NSTools::local_maximum(density, p, dj, dk))
           local_maxima.add({rho[p], rho[p], position});
@@ -489,7 +491,7 @@ extern "C" void NSSurface_Find(CCTK_ARGUMENTS) {
   for (auto &peak : slot_peaks)
     if (peak == lowest)
       peak = unset;
-  reduce(cctkGH, "minimum", max_slots, slot_floors.data());
+  reduce(cctkGH, "minimum", 1, &grid_floor);
   reduce(cctkGH, "minimum", 1, &finest_spacing);
   const auto grid_refl = grid_reflections();
   reduce(cctkGH, "minimum", 3, grid_min.data());
@@ -629,13 +631,27 @@ extern "C" void NSSurface_Find(CCTK_ARGUMENTS) {
                    origin[2] + core.shift[2]};
     };
 
+    // The contour must lie well above the atmosphere (otherwise the atmosphere
+    // joins the stars); warned once per slot.
+    auto level = [&](CCTK_REAL peak) {
+      const CCTK_REAL cutoff = contour_density(s, peak, rho_reference[s]);
+      if (cutoff > 0 && cutoff < 10 * grid_floor && !warned_floor[s] && rank == 0) {
+        CCTK_VWarn(1, __LINE__, __FILE__, CCTK_THORNSTRING,
+                   "NSSurface[%d]: contour density %g is within a factor 10 of the "
+                   "lowest density %g on the grid (atmosphere); raise "
+                   "rho_surface_fraction", s, double(cutoff), double(grid_floor));
+        warned_floor[s] = true;
+      }
+      return cutoff;
+    };
+
     const Point origin = origin_of(s);
     SearchResult result;
     if (slot_state[s] == following) {
       // Joined to a star found earlier on this step: the stars have merged
       // (or touch at this level). The slot waits to be placed again on a star
       // that separates, keeping its contour level.
-      const CCTK_REAL cutoff = contour_density(s, slot_peaks[s], rho_reference[s]);
+      const CCTK_REAL cutoff = level(slot_peaks[s]);
       if (finite(origin) && cutoff > 0 && !others(origin, cutoff, true, true).empty()) {
         if (!external[s])
           slot_state[s] = waiting;
@@ -656,7 +672,7 @@ extern "C" void NSSurface_Find(CCTK_ARGUMENTS) {
         for (int a = 0; a < 3; ++a)
           if (reflected[a])
             position[a] = 0.0;
-        const CCTK_REAL cutoff = contour_density(s, candidate.value, rho_reference[s]);
+        const CCTK_REAL cutoff = level(candidate.value);
         if (candidate.value > cutoff && others(position, cutoff, true, false).empty()) {
           result = search(centred(position, candidate.value), candidate.value, cutoff, 0.0);
           if (result.ok)
@@ -685,15 +701,6 @@ extern "C" void NSSurface_Find(CCTK_ARGUMENTS) {
     if (rho_reference[s] <= 0)
       rho_reference[s] = result.peak;
     outer_radius[s] = result.reach;
-    // The contour must lie well above the atmosphere around the star.
-    if (slot_floors[s] > 0 && result.cutoff < 10 * slot_floors[s] && !warned_floor[s] &&
-        rank == 0) {
-      CCTK_VWarn(1, __LINE__, __FILE__, CCTK_THORNSTRING,
-                 "NSSurface[%d]: contour density %g is within a factor 10 of the "
-                 "lowest density %g around the star (atmosphere); raise "
-                 "rho_surface_fraction", s, double(result.cutoff), double(slot_floors[s]));
-      warned_floor[s] = true;
-    }
     slot_state[s] = following;
     for (int j = 0; j < np; ++j)
       for (int i = 0; i < nt; ++i)
